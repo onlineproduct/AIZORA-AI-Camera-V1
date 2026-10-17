@@ -7,8 +7,8 @@ android {
         applicationId 'com.aizora.aicamera'
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName '1.0'
+        versionCode 3
+        versionName '1.3-libvlc-test'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -24,4 +24,5 @@ dependencies {
     implementation "androidx.camera:camera-view:$camerax"
     implementation "androidx.camera:camera-video:$camerax"
     implementation 'androidx.activity:activity:1.9.3'
+    implementation 'org.videolan.android:libvlc-all:3.5.1'
 }
