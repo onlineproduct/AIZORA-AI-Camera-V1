@@ -1,132 +1,220 @@
 package com.aizora.aicamera;
 
-import android.Manifest;
-import android.content.ContentValues;
-import android.content.pm.PackageManager;
-import android.os.Build;
+import android.net.Uri;
 import android.os.Bundle;
-import android.provider.MediaStore;
+import android.graphics.Color;
 import android.view.Gravity;
-import android.view.ViewGroup;
+import android.view.View;
+import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+
 import androidx.activity.ComponentActivity;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.contract.ActivityResultContracts;
-import androidx.camera.core.CameraSelector;
-import androidx.camera.core.ImageCapture;
-import androidx.camera.core.ImageCaptureException;
-import androidx.camera.core.Preview;
-import androidx.camera.lifecycle.ProcessCameraProvider;
-import androidx.camera.video.MediaStoreOutputOptions;
-import androidx.camera.video.PendingRecording;
-import androidx.camera.video.Recording;
-import androidx.camera.video.Recorder;
-import androidx.camera.video.VideoCapture;
-import androidx.camera.video.VideoRecordEvent;
-import androidx.camera.view.PreviewView;
-import androidx.core.content.ContextCompat;
-import com.google.common.util.concurrent.ListenableFuture;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
+
+import org.videolan.libvlc.LibVLC;
+import org.videolan.libvlc.Media;
+import org.videolan.libvlc.MediaPlayer;
+import org.videolan.libvlc.util.VLCVideoLayout;
+
+import java.util.ArrayList;
 
 public class MainActivity extends ComponentActivity {
-    private PreviewView previewView;
-    private ImageCapture imageCapture;
-    private VideoCapture<Recorder> videoCapture;
-    private Recording recording;
-    private Button recordButton;
-    private int lens = CameraSelector.LENS_FACING_BACK;
-    private final ActivityResultLauncher<String[]> permissions = registerForActivityResult(
-        new ActivityResultContracts.RequestMultiplePermissions(), result -> {
-            if (Boolean.TRUE.equals(result.get(Manifest.permission.CAMERA))) startCamera();
-            else toast("Camera permission is required");
-        });
+    private static final String DEFAULT_URL = "rtsp://192.168.0.102:554/live/ch00_1";
+    private VLCVideoLayout videoLayout;
+    private EditText urlInput;
+    private TextView statusView;
+    private LibVLC libVLC;
+    private MediaPlayer mediaPlayer;
+    private boolean fullScreen = false;
 
-    @Override public void onCreate(Bundle state) {
-        super.onCreate(state);
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        buildInterface();
+        initializePlayer();
+    }
+
+    private void buildInterface() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(0xFF101522);
+        root.setPadding(dp(14), dp(12), dp(14), dp(12));
+        root.setBackgroundColor(Color.rgb(15, 23, 42));
+
         TextView title = new TextView(this);
-        title.setText("AIZORA AI Camera  •  V1.0");
+        title.setText("AIZORA AI CAMERA  V2.0");
+        title.setTextColor(Color.WHITE);
         title.setTextSize(20);
-        title.setTextColor(0xFFFFFFFF);
-        title.setPadding(22, 22, 12, 22);
-        root.addView(title);
-        previewView = new PreviewView(this);
-        root.addView(previewView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        LinearLayout controls = new LinearLayout(this);
-        controls.setGravity(Gravity.CENTER);
-        controls.setPadding(8, 18, 8, 25);
-        Button photo = new Button(this); photo.setText("PHOTO");
-        recordButton = new Button(this); recordButton.setText("RECORD");
-        Button flip = new Button(this); flip.setText("FLIP");
-        controls.addView(photo, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        controls.addView(recordButton, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        controls.addView(flip, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        root.addView(controls);
+        title.setGravity(Gravity.CENTER_VERTICAL);
+        title.setPadding(0, dp(4), 0, dp(12));
+        root.addView(title, new LinearLayout.LayoutParams(-1, -2));
+
+        urlInput = new EditText(this);
+        urlInput.setSingleLine(true);
+        urlInput.setText(DEFAULT_URL);
+        urlInput.setTextColor(Color.WHITE);
+        urlInput.setHintTextColor(Color.LTGRAY);
+        urlInput.setHint("rtsp://camera-address:554/path");
+        urlInput.setTextSize(13);
+        urlInput.setPadding(dp(10), dp(8), dp(10), dp(8));
+        urlInput.setBackgroundColor(Color.rgb(35, 45, 65));
+        root.addView(urlInput, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.CENTER);
+        buttons.setPadding(0, dp(8), 0, dp(8));
+
+        Button connect = new Button(this);
+        connect.setText("CONNECT");
+        Button stop = new Button(this);
+        stop.setText("STOP");
+        Button full = new Button(this);
+        full.setText("FULLSCREEN");
+
+        buttons.addView(connect, new LinearLayout.LayoutParams(0, -2, 1));
+        buttons.addView(stop, new LinearLayout.LayoutParams(0, -2, 1));
+        buttons.addView(full, new LinearLayout.LayoutParams(0, -2, 1));
+        root.addView(buttons, new LinearLayout.LayoutParams(-1, -2));
+
+        statusView = new TextView(this);
+        statusView.setText("Ready — connect to a camera on the same network");
+        statusView.setTextColor(Color.rgb(147, 197, 253));
+        statusView.setTextSize(13);
+        statusView.setPadding(0, 0, 0, dp(8));
+        root.addView(statusView, new LinearLayout.LayoutParams(-1, -2));
+
+        videoLayout = new VLCVideoLayout(this);
+        videoLayout.setBackgroundColor(Color.BLACK);
+        root.addView(videoLayout, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        TextView note = new TextView(this);
+        note.setText("RTSP viewer • Camera and phone should be on a reachable network");
+        note.setTextColor(Color.LTGRAY);
+        note.setTextSize(11);
+        note.setPadding(0, dp(8), 0, 0);
+        root.addView(note, new LinearLayout.LayoutParams(-1, -2));
+
         setContentView(root);
-        photo.setOnClickListener(v -> takePhoto());
-        recordButton.setOnClickListener(v -> toggleVideo());
-        flip.setOnClickListener(v -> { if (recording != null) { toast("Stop recording first"); return; }
-            lens = lens == CameraSelector.LENS_FACING_BACK ? CameraSelector.LENS_FACING_FRONT : CameraSelector.LENS_FACING_BACK; startCamera(); });
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera();
-        else permissions.launch(new String[]{Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO});
+        connect.setOnClickListener(v -> connectCamera());
+        stop.setOnClickListener(v -> stopCamera());
+        full.setOnClickListener(v -> toggleFullScreen());
     }
 
-    private void startCamera() {
-        ListenableFuture<ProcessCameraProvider> future = ProcessCameraProvider.getInstance(this);
-        future.addListener(() -> {
+    private void initializePlayer() {
+        try {
+            ArrayList<String> options = new ArrayList<>();
+            options.add("--rtsp-tcp");
+            options.add("--network-caching=1500");
+            libVLC = new LibVLC(this, options);
+            mediaPlayer = new MediaPlayer(libVLC);
+            mediaPlayer.setEventListener(event -> runOnUiThread(() -> {
+                switch (event.type) {
+                    case MediaPlayer.Event.Opening:
+                        setStatus("Opening camera stream...");
+                        break;
+                    case MediaPlayer.Event.Buffering:
+                        setStatus("Buffering: " + (int) event.getBuffering() + "%");
+                        break;
+                    case MediaPlayer.Event.Playing:
+                        setStatus("Video is playing");
+                        break;
+                    case MediaPlayer.Event.EncounteredError:
+                        setStatus("Stream error — check RTSP URL, Wi-Fi and camera access");
+                        break;
+                    case MediaPlayer.Event.Stopped:
+                        setStatus("Stopped");
+                        break;
+                    default:
+                        break;
+                }
+            }));
+            mediaPlayer.attachViews(videoLayout, null, false, false);
+        } catch (Exception e) {
+            setStatus("Player initialization failed: " + safeMessage(e));
+        }
+    }
+
+    private void connectCamera() {
+        String url = urlInput.getText().toString().trim();
+        if (url.isEmpty() || !(url.startsWith("rtsp://") || url.startsWith("rtsps://"))) {
+            Toast.makeText(this, "Enter a valid RTSP URL", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (mediaPlayer == null || libVLC == null) {
+            setStatus("Video player could not initialize");
+            return;
+        }
+        try {
+            mediaPlayer.stop();
+            Media media = new Media(libVLC, Uri.parse(url));
+            media.setHWDecoderEnabled(false, false);
+            media.addOption(":network-caching=1500");
+            media.addOption(":rtsp-tcp");
+            mediaPlayer.setMedia(media);
+            media.release();
+            setStatus("Connecting to camera...");
+            mediaPlayer.play();
+        } catch (Exception e) {
+            setStatus("Could not start stream: " + safeMessage(e));
+        }
+    }
+
+    private void stopCamera() {
+        if (mediaPlayer != null) {
+            try { mediaPlayer.stop(); } catch (Exception ignored) { }
+        }
+        setStatus("Stopped");
+    }
+
+    private void toggleFullScreen() {
+        fullScreen = !fullScreen;
+        int flags = View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+        if (fullScreen) {
+            getWindow().getDecorView().setSystemUiVisibility(flags);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        }
+    }
+
+    private void setStatus(String message) {
+        if (statusView != null) statusView.setText(message);
+    }
+
+    private String safeMessage(Exception e) {
+        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+    }
+
+    private int dp(int value) {
+        return (int) (value * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    @Override
+    protected void onStop() {
+        if (mediaPlayer != null) {
+            try { mediaPlayer.stop(); } catch (Exception ignored) { }
+        }
+        super.onStop();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (mediaPlayer != null) {
             try {
-                ProcessCameraProvider provider = future.get();
-                Preview preview = new Preview.Builder().build();
-                preview.setSurfaceProvider(previewView.getSurfaceProvider());
-                imageCapture = new ImageCapture.Builder().build();
-                videoCapture = VideoCapture.withOutput(new Recorder.Builder().build());
-                provider.unbindAll();
-                provider.bindToLifecycle(this, new CameraSelector.Builder().requireLensFacing(lens).build(), preview, imageCapture, videoCapture);
-            } catch (Exception e) { toast("Camera unavailable: " + e.getMessage()); }
-        }, ContextCompat.getMainExecutor(this));
+                mediaPlayer.stop();
+                mediaPlayer.detachViews();
+                mediaPlayer.release();
+            } catch (Exception ignored) { }
+            mediaPlayer = null;
+        }
+        if (libVLC != null) {
+            libVLC.release();
+            libVLC = null;
+        }
+        super.onDestroy();
     }
-
-    private String timestamp() { return new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()); }
-    private void takePhoto() {
-        if (imageCapture == null) { toast("Camera not ready"); return; }
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.MediaColumns.DISPLAY_NAME, "AIZORA_" + timestamp() + ".jpg");
-        values.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
-        if (Build.VERSION.SDK_INT >= 29) values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/AIZORA");
-        ImageCapture.OutputFileOptions options = new ImageCapture.OutputFileOptions.Builder(getContentResolver(), MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values).build();
-        imageCapture.takePicture(options, ContextCompat.getMainExecutor(this), new ImageCapture.OnImageSavedCallback() {
-            @Override public void onImageSaved(ImageCapture.OutputFileResults output) { toast("Photo saved to gallery"); }
-            @Override public void onError(ImageCaptureException e) { toast("Photo failed: " + e.getMessage()); }
-        });
-    }
-
-    private void toggleVideo() {
-        if (recording != null) { recording.stop(); return; }
-        if (videoCapture == null) { toast("Camera not ready"); return; }
-        ContentValues values = new ContentValues();
-        values.put(MediaStore.MediaColumns.DISPLAY_NAME, "AIZORA_" + timestamp() + ".mp4");
-        values.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
-        if (Build.VERSION.SDK_INT >= 29) values.put(MediaStore.MediaColumns.RELATIVE_PATH, "Movies/AIZORA");
-        MediaStoreOutputOptions options = new MediaStoreOutputOptions.Builder(getContentResolver(), MediaStore.Video.Media.EXTERNAL_CONTENT_URI).setContentValues(values).build();
-        PendingRecording pending = videoCapture.getOutput().prepareRecording(this, options);
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) pending = pending.withAudioEnabled();
-        recording = pending.start(ContextCompat.getMainExecutor(this), event -> {
-            if (event instanceof VideoRecordEvent.Start) recordButton.setText("STOP");
-            if (event instanceof VideoRecordEvent.Finalize) {
-                VideoRecordEvent.Finalize finish = (VideoRecordEvent.Finalize) event;
-                toast(finish.hasError() ? "Video failed: " + finish.getError() : "Video saved to gallery");
-                recording = null;
-                recordButton.setText("RECORD");
-            }
-        });
-    }
-    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
-    @Override protected void onDestroy() { if (recording != null) recording.stop(); super.onDestroy(); }
 }
