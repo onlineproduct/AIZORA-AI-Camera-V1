@@ -226,7 +226,7 @@ public class MainActivity extends ComponentActivity {
                 }
                 @Override public void onPlayerError(PlaybackException error) {
                     status.setText("CCTV connection failed • Check Wi-Fi and RTSP address");
-                    toast("CCTV error: " + error.errorCodeName);
+                    toast("CCTV error: " + error.getMessage());
                 }
             });
             MediaItem item = MediaItem.fromUri(url);
