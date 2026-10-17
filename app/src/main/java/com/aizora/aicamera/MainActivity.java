@@ -65,8 +65,10 @@ public class MainActivity extends ComponentActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Runnable connectTimeout;
     private final java.util.ArrayList<String> rtspCandidates = new java.util.ArrayList<>();
+    private final java.util.ArrayList<Boolean> rtspTcpModes = new java.util.ArrayList<>();
     private int rtspCandidateIndex = 0;
     private boolean fallbackActive = false;
+    private String lastRtspError = "No detailed playback error received";
 
     private final ActivityResultLauncher<String> cameraPermission =
         registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
@@ -220,33 +222,40 @@ public class MainActivity extends ComponentActivity {
         }
         if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
         rtspCandidates.clear();
+        rtspTcpModes.clear();
         rtspCandidateIndex = 0;
         fallbackActive = true;
-        addCandidate(url);
+        lastRtspError = "No detailed playback error received";
 
-        // For the user's known V380 camera, automatically try the other VLC-tested RTSP paths.
+        java.util.ArrayList<String> urls = new java.util.ArrayList<>();
+        urls.add(url);
         if (url.contains("192.168.0.102:554")) {
-            addCandidate("rtsp://192.168.0.102:554/live/ch00_1");
-            addCandidate("rtsp://192.168.0.102:554/liv");
-            addCandidate("rtsp://192.168.0.102:554");
+            urls.add("rtsp://192.168.0.102:554/live/ch00_1");
+            urls.add("rtsp://192.168.0.102:554/liv");
+            urls.add("rtsp://192.168.0.102:554");
+        }
+        for (String candidate : urls) {
+            if (!rtspCandidates.contains(candidate)) {
+                rtspCandidates.add(candidate);
+                rtspTcpModes.add(Boolean.TRUE);
+                rtspCandidates.add(candidate);
+                rtspTcpModes.add(Boolean.FALSE);
+            }
         }
         tryCandidate();
-    }
-
-    private void addCandidate(String url) {
-        if (!rtspCandidates.contains(url)) rtspCandidates.add(url);
     }
 
     private void tryCandidate() {
         if (rtspCandidateIndex >= rtspCandidates.size()) {
             fallbackActive = false;
-            status.setText("All RTSP addresses failed • Check the camera stream settings");
-            toast("Tried all known RTSP addresses, but no video arrived. Please send a screenshot of this screen.");
+            status.setText("All RTSP/TCP and UDP attempts failed. Last error: " + lastRtspError);
+            toast("CCTV could not start. Last error: " + lastRtspError);
             return;
         }
         final String url = rtspCandidates.get(rtspCandidateIndex);
+        final boolean useTcp = rtspTcpModes.get(rtspCandidateIndex);
         rtspInput.setText(url);
-        status.setText("Trying CCTV address " + (rtspCandidateIndex + 1) + " of " + rtspCandidates.size());
+        status.setText("Trying " + (useTcp ? "TCP" : "UDP") + " (" + (rtspCandidateIndex + 1) + "/" + rtspCandidates.size() + ")");
         if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
         if (player != null) {
             player.release();
@@ -260,7 +269,7 @@ public class MainActivity extends ComponentActivity {
                 @Override public void onPlaybackStateChanged(int playbackState) {
                     if (player != currentPlayer) return;
                     if (playbackState == Player.STATE_BUFFERING) {
-                        status.setText("Connecting to CCTV (" + (rtspCandidateIndex + 1) + "/" + rtspCandidates.size() + ")…");
+                        status.setText("Connecting CCTV via " + (useTcp ? "TCP" : "UDP") + " (" + (rtspCandidateIndex + 1) + "/" + rtspCandidates.size() + ")");
                     } else if (playbackState == Player.STATE_READY) {
                         if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
                         fallbackActive = false;
@@ -272,14 +281,15 @@ public class MainActivity extends ComponentActivity {
 
                 @Override public void onPlayerError(PlaybackException error) {
                     if (player != currentPlayer) return;
+                    lastRtspError = error.getErrorCodeName() + ": " + error.getMessage();
                     if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
                     if (fallbackActive && rtspCandidateIndex + 1 < rtspCandidates.size()) {
-                        status.setText("This address failed; trying the next RTSP address…");
+                        status.setText("This RTSP mode failed; trying next mode…");
                         rtspCandidateIndex++;
-                        mainHandler.postDelayed(() -> tryCandidate(), 700);
+                        mainHandler.postDelayed(() -> tryCandidate(), 500);
                     } else {
                         fallbackActive = false;
-                        status.setText("CCTV playback error: " + error.getErrorCodeName());
+                        status.setText("CCTV error: " + lastRtspError);
                         toast("CCTV error: " + error.getErrorCodeName());
                     }
                 }
@@ -287,34 +297,35 @@ public class MainActivity extends ComponentActivity {
 
             MediaItem item = MediaItem.fromUri(url);
             currentPlayer.setMediaSource(new RtspMediaSource.Factory()
-                    .setForceUseRtpTcp(true)
+                    .setForceUseRtpTcp(useTcp)
                     .createMediaSource(item));
             currentPlayer.prepare();
             currentPlayer.play();
 
             connectTimeout = () -> {
                 if (player == currentPlayer && currentPlayer.getPlaybackState() == Player.STATE_BUFFERING) {
+                    lastRtspError = "Timed out waiting for video (" + (useTcp ? "TCP" : "UDP") + ")";
                     if (fallbackActive && rtspCandidateIndex + 1 < rtspCandidates.size()) {
-                        status.setText("No video from this address; trying another…");
                         currentPlayer.release();
                         player = null;
                         rtspCandidateIndex++;
                         tryCandidate();
                     } else {
                         fallbackActive = false;
-                        status.setText("No CCTV video after trying the available RTSP addresses");
-                        toast("No video received from the tested RTSP addresses. Please send a screenshot.");
+                        status.setText("All RTSP attempts timed out. Last: " + lastRtspError);
+                        toast("No video after TCP and UDP attempts. Please send a screenshot.");
                     }
                 }
             };
-            mainHandler.postDelayed(connectTimeout, 15000);
+            mainHandler.postDelayed(connectTimeout, 12000);
         } catch (Exception e) {
+            lastRtspError = e.getClass().getSimpleName() + ": " + e.getMessage();
             if (fallbackActive && rtspCandidateIndex + 1 < rtspCandidates.size()) {
                 rtspCandidateIndex++;
                 tryCandidate();
             } else {
                 fallbackActive = false;
-                status.setText("Unable to start CCTV stream");
+                status.setText("Unable to start CCTV: " + lastRtspError);
                 toast("Could not start CCTV: " + e.getMessage());
             }
         }
