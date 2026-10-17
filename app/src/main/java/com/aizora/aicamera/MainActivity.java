@@ -56,6 +56,7 @@ public class MainActivity extends ComponentActivity {
     private FrameLayout videoStage;
     private FrameLayout phoneWindow;
     private boolean fullscreen = false;
+    private Button fullscreenButton;
     private int lens = CameraSelector.LENS_FACING_BACK;
     private float downRawX, downRawY;
     private int downX, downY;
@@ -91,7 +92,8 @@ public class MainActivity extends ComponentActivity {
         title.setTextSize(20);
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         header.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        Button full = button("Fullscreen");
+        fullscreenButton = button("Fullscreen");
+        Button full = fullscreenButton;
         header.addView(full);
         root.addView(header);
 
@@ -132,8 +134,8 @@ public class MainActivity extends ComponentActivity {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 downRawX = event.getRawX();
                 downRawY = event.getRawY();
-                downX = lp.leftMargin;
-                downY = lp.topMargin;
+                downX = phoneWindow.getLeft();
+                downY = phoneWindow.getTop();
                 return true;
             }
             if (event.getAction() == MotionEvent.ACTION_MOVE) {
@@ -305,6 +307,11 @@ public class MainActivity extends ComponentActivity {
 
     private void toast(String message) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    @Override public void onBackPressed() {
+        if (fullscreen) toggleFullscreen(fullscreenButton);
+        else super.onBackPressed();
     }
 
     @Override protected void onDestroy() {
