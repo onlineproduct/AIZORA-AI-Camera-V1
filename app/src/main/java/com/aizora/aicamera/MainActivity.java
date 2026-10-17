@@ -57,7 +57,8 @@ public class MainActivity extends ComponentActivity {
         super.onCreate(savedInstanceState);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         buildInterface();
-        initializePlayer();
+        // Wait until the view hierarchy is attached before initializing native VLC.
+        videoLayout.postDelayed(this::initializePlayer, 300);
     }
 
     private void buildInterface() {
@@ -168,9 +169,10 @@ public class MainActivity extends ComponentActivity {
                 }
             }));
             mediaPlayer.attachViews(videoLayout, null, false, false);
-            connectCamera();
-        } catch (Exception e) {
-            setStatus("Player initialization failed: " + safeMessage(e));
+            setStatus("Player ready. Press CONNECT to open the CCTV stream.");
+        } catch (Throwable e) {
+            // Prevent Java-level startup/linkage errors from closing the whole app.
+            setStatus("VLC initialization failed: " + e.getClass().getSimpleName() + ": " + safeThrowableMessage(e));
         }
     }
 
@@ -349,6 +351,10 @@ public class MainActivity extends ComponentActivity {
     }
 
     private String safeMessage(Exception e) {
+        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+    }
+
+    private String safeThrowableMessage(Throwable e) {
         return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
     }
 
