@@ -3,10 +3,11 @@ package com.aizora.aicamera;
 import android.Manifest;
 import android.content.ContentValues;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -30,24 +31,25 @@ import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
 
-import androidx.media3.common.MediaItem;
-import androidx.media3.common.PlaybackException;
-import androidx.media3.common.Player;
-import androidx.media3.exoplayer.ExoPlayer;
-import androidx.media3.exoplayer.rtsp.RtspMediaSource;
-import androidx.media3.ui.PlayerView;
-
 import com.google.common.util.concurrent.ListenableFuture;
 
+import org.videolan.libvlc.LibVLC;
+import org.videolan.libvlc.Media;
+import org.videolan.libvlc.MediaPlayer;
+import org.videolan.libvlc.util.VLCVideoLayout;
+
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
 
 public class MainActivity extends ComponentActivity {
     private static final String DEFAULT_RTSP = "rtsp://192.168.0.102:554/live/ch00_1";
 
-    private PlayerView cctvPlayerView;
-    private ExoPlayer player;
+    private VLCVideoLayout cctvVideoLayout;
+    private LibVLC libVLC;
+    private MediaPlayer vlcPlayer;
     private PreviewView phonePreview;
     private ImageCapture imageCapture;
     private EditText rtspInput;
@@ -64,11 +66,11 @@ public class MainActivity extends ComponentActivity {
     private int downX, downY;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Runnable connectTimeout;
-    private final java.util.ArrayList<String> rtspCandidates = new java.util.ArrayList<>();
-    private final java.util.ArrayList<Boolean> rtspTcpModes = new java.util.ArrayList<>();
+    private final ArrayList<String> rtspCandidates = new ArrayList<>();
+    private final ArrayList<Boolean> rtspTcpModes = new ArrayList<>();
     private int rtspCandidateIndex = 0;
     private boolean fallbackActive = false;
-    private String lastRtspError = "No detailed playback error received";
+    private String lastRtspError = "No LibVLC playback event received";
 
     private final ActivityResultLauncher<String> cameraPermission =
         registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
@@ -102,16 +104,13 @@ public class MainActivity extends ComponentActivity {
         title.setTypeface(null, android.graphics.Typeface.BOLD);
         header.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         fullscreenButton = button("Fullscreen");
-        Button full = fullscreenButton;
-        header.addView(full);
+        header.addView(fullscreenButton);
         root.addView(header);
 
         videoStage = new FrameLayout(this);
         videoStage.setBackgroundColor(0xFF05070C);
-        cctvPlayerView = new PlayerView(this);
-        cctvPlayerView.setUseController(false);
-        cctvPlayerView.setKeepContentOnPlayerReset(true);
-        videoStage.addView(cctvPlayerView, new FrameLayout.LayoutParams(
+        cctvVideoLayout = new VLCVideoLayout(this);
+        videoStage.addView(cctvVideoLayout, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         phoneWindow = new FrameLayout(this);
@@ -130,12 +129,11 @@ public class MainActivity extends ComponentActivity {
         phoneTag.setPadding(dp(6), dp(3), dp(6), dp(3));
         phoneTag.setBackgroundColor(0xCC087F5B);
         FrameLayout.LayoutParams tagLp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.START);
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
         phoneWindow.addView(phoneTag, tagLp);
 
-        int pipWidth = dp(132);
-        int pipHeight = dp(188);
-        FrameLayout.LayoutParams pipLp = new FrameLayout.LayoutParams(pipWidth, pipHeight, Gravity.TOP | Gravity.END);
+        FrameLayout.LayoutParams pipLp = new FrameLayout.LayoutParams(dp(132), dp(188), Gravity.TOP | Gravity.END);
         pipLp.setMargins(0, dp(14), dp(14), 0);
         videoStage.addView(phoneWindow, pipLp);
         phoneWindow.setOnTouchListener((v, event) -> {
@@ -202,7 +200,7 @@ public class MainActivity extends ComponentActivity {
                     ? CameraSelector.LENS_FACING_FRONT : CameraSelector.LENS_FACING_BACK;
             startPhoneCamera();
         });
-        full.setOnClickListener(v -> toggleFullscreen(full));
+        fullscreenButton.setOnClickListener(v -> toggleFullscreen());
         setContentView(root);
     }
 
@@ -221,13 +219,14 @@ public class MainActivity extends ComponentActivity {
             return;
         }
         if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
+        stopVlcPlayer();
         rtspCandidates.clear();
         rtspTcpModes.clear();
         rtspCandidateIndex = 0;
         fallbackActive = true;
-        lastRtspError = "No detailed playback error received";
+        lastRtspError = "No LibVLC playback event received";
 
-        java.util.ArrayList<String> urls = new java.util.ArrayList<>();
+        ArrayList<String> urls = new ArrayList<>();
         urls.add(url);
         if (url.contains("192.168.0.102:554")) {
             urls.add("rtsp://192.168.0.102:554/live/ch00_1");
@@ -245,99 +244,97 @@ public class MainActivity extends ComponentActivity {
         tryCandidate();
     }
 
+    private void ensureLibVlc() {
+        if (libVLC == null) {
+            libVLC = new LibVLC(this, Arrays.asList("--no-drop-late-frames", "--no-skip-frames"));
+        }
+    }
+
     private void tryCandidate() {
         if (rtspCandidateIndex >= rtspCandidates.size()) {
             fallbackActive = false;
-            status.setText("All RTSP/TCP and UDP attempts failed. Last error: " + lastRtspError);
+            status.setText("All LibVLC RTSP attempts failed. Last: " + lastRtspError);
             toast("CCTV could not start. Last error: " + lastRtspError);
             return;
         }
         final String url = rtspCandidates.get(rtspCandidateIndex);
         final boolean useTcp = rtspTcpModes.get(rtspCandidateIndex);
         rtspInput.setText(url);
-        status.setText("Trying " + (useTcp ? "TCP" : "UDP") + " (" + (rtspCandidateIndex + 1) + "/" + rtspCandidates.size() + ")");
+        status.setText("LibVLC: trying " + (useTcp ? "TCP" : "UDP") + " (" +
+                (rtspCandidateIndex + 1) + "/" + rtspCandidates.size() + ")");
         if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
-        if (player != null) {
-            player.release();
-            player = null;
-        }
+        stopVlcPlayer();
+
         try {
-            final ExoPlayer currentPlayer = new ExoPlayer.Builder(this).build();
-            player = currentPlayer;
-            cctvPlayerView.setPlayer(currentPlayer);
-            currentPlayer.addListener(new Player.Listener() {
-                @Override public void onPlaybackStateChanged(int playbackState) {
-                    if (player != currentPlayer) return;
-                    if (playbackState == Player.STATE_BUFFERING) {
-                        status.setText("Connecting CCTV via " + (useTcp ? "TCP" : "UDP") + " (" + (rtspCandidateIndex + 1) + "/" + rtspCandidates.size() + ")");
-                    } else if (playbackState == Player.STATE_READY) {
-                        if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
-                        fallbackActive = false;
-                        status.setText("CCTV video received • Drag PHONE window to move");
-                    } else if (playbackState == Player.STATE_ENDED) {
-                        status.setText("CCTV stream ended");
-                    }
-                }
-
-                @Override public void onPlayerError(PlaybackException error) {
-                    if (player != currentPlayer) return;
-                    lastRtspError = error.getErrorCodeName() + ": " + error.getMessage();
+            ensureLibVlc();
+            final MediaPlayer current = new MediaPlayer(libVLC);
+            vlcPlayer = current;
+            current.attachViews(cctvVideoLayout, null, false, false);
+            current.setEventListener(event -> runOnUiThread(() -> {
+                if (vlcPlayer != current) return;
+                if (event.type == MediaPlayer.Event.Playing) {
                     if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
-                    if (fallbackActive && rtspCandidateIndex + 1 < rtspCandidates.size()) {
-                        status.setText("This RTSP mode failed; trying next mode…");
-                        rtspCandidateIndex++;
-                        mainHandler.postDelayed(() -> tryCandidate(), 500);
-                    } else {
-                        fallbackActive = false;
-                        status.setText("CCTV error: " + lastRtspError);
-                        toast("CCTV error: " + error.getErrorCodeName());
-                    }
+                    fallbackActive = false;
+                    status.setText("CCTV playback started • LibVLC • Drag PHONE window to move");
+                } else if (event.type == MediaPlayer.Event.EncounteredError) {
+                    lastRtspError = "LibVLC EncounteredError (" + (useTcp ? "TCP" : "UDP") + ")";
+                    if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
+                    advanceCandidate();
+                } else if (event.type == MediaPlayer.Event.Buffering) {
+                    status.setText("LibVLC buffering CCTV (" + (useTcp ? "TCP" : "UDP") + ")");
                 }
-            });
+            }));
 
-            MediaItem item = MediaItem.fromUri(url);
-            currentPlayer.setMediaSource(new RtspMediaSource.Factory()
-                    .setForceUseRtpTcp(useTcp)
-                    .createMediaSource(item));
-            currentPlayer.prepare();
-            currentPlayer.play();
+            Media media = new Media(libVLC, Uri.parse(url));
+            media.setHWDecoderEnabled(true, false);
+            media.addOption(":network-caching=1000");
+            media.addOption(":live-caching=1000");
+            if (useTcp) media.addOption(":rtsp-tcp");
+            current.setMedia(media);
+            media.release();
+            current.play();
 
             connectTimeout = () -> {
-                if (player == currentPlayer && currentPlayer.getPlaybackState() == Player.STATE_BUFFERING) {
-                    lastRtspError = "Timed out waiting for video (" + (useTcp ? "TCP" : "UDP") + ")";
-                    if (fallbackActive && rtspCandidateIndex + 1 < rtspCandidates.size()) {
-                        currentPlayer.release();
-                        player = null;
-                        rtspCandidateIndex++;
-                        tryCandidate();
-                    } else {
-                        fallbackActive = false;
-                        status.setText("All RTSP attempts timed out. Last: " + lastRtspError);
-                        toast("No video after TCP and UDP attempts. Please send a screenshot.");
-                    }
+                if (vlcPlayer == current && current.isPlaying() == false && fallbackActive) {
+                    lastRtspError = "Timed out waiting for LibVLC video (" + (useTcp ? "TCP" : "UDP") + ")";
+                    advanceCandidate();
+                } else if (vlcPlayer == current && fallbackActive) {
+                    lastRtspError = "LibVLC did not confirm playback in time";
+                    advanceCandidate();
                 }
             };
-            mainHandler.postDelayed(connectTimeout, 12000);
+            mainHandler.postDelayed(connectTimeout, 15000);
         } catch (Exception e) {
             lastRtspError = e.getClass().getSimpleName() + ": " + e.getMessage();
-            if (fallbackActive && rtspCandidateIndex + 1 < rtspCandidates.size()) {
-                rtspCandidateIndex++;
-                tryCandidate();
-            } else {
-                fallbackActive = false;
-                status.setText("Unable to start CCTV: " + lastRtspError);
-                toast("Could not start CCTV: " + e.getMessage());
-            }
+            advanceCandidate();
+        }
+    }
+
+    private void advanceCandidate() {
+        if (!fallbackActive) return;
+        if (rtspCandidateIndex + 1 < rtspCandidates.size()) {
+            rtspCandidateIndex++;
+            mainHandler.postDelayed(this::tryCandidate, 400);
+        } else {
+            fallbackActive = false;
+            status.setText("All LibVLC RTSP attempts failed. Last: " + lastRtspError);
+            toast("LibVLC could not play CCTV. Last: " + lastRtspError);
+        }
+    }
+
+    private void stopVlcPlayer() {
+        if (vlcPlayer != null) {
+            try { vlcPlayer.stop(); } catch (Exception ignored) {}
+            try { vlcPlayer.detachViews(); } catch (Exception ignored) {}
+            try { vlcPlayer.release(); } catch (Exception ignored) {}
+            vlcPlayer = null;
         }
     }
 
     private void stopCctv() {
         fallbackActive = false;
         if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
-        if (player != null) {
-            player.stop();
-            player.clearMediaItems();
-        }
+        stopVlcPlayer();
         status.setText("CCTV stopped • Phone preview remains active");
     }
 
@@ -382,17 +379,13 @@ public class MainActivity extends ComponentActivity {
                 });
     }
 
-    private void toggleFullscreen(Button full) {
+    private void toggleFullscreen() {
         fullscreen = !fullscreen;
         header.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         urlRow.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         controls.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
         status.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
-        full.setText(fullscreen ? "Exit Fullscreen" : "Fullscreen");
-        getWindow().getDecorView().setSystemUiVisibility(fullscreen
-                ? (View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
-                : View.SYSTEM_UI_FLAG_VISIBLE);
+        fullscreenButton.setText(fullscreen ? "Exit Fullscreen" : "Fullscreen");
     }
 
     private int dp(int value) {
@@ -400,20 +393,16 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void toast(String message) {
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
-    }
-
-    @Override public void onBackPressed() {
-        if (fullscreen) toggleFullscreen(fullscreenButton);
-        else super.onBackPressed();
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
     }
 
     @Override protected void onDestroy() {
         if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
-        if (player != null) {
-            cctvPlayerView.setPlayer(null);
-            player.release();
-            player = null;
+        fallbackActive = false;
+        stopVlcPlayer();
+        if (libVLC != null) {
+            libVLC.release();
+            libVLC = null;
         }
         super.onDestroy();
     }
