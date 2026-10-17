@@ -4,6 +4,8 @@ import android.Manifest;
 import android.content.ContentValues;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.Gravity;
@@ -60,6 +62,8 @@ public class MainActivity extends ComponentActivity {
     private int lens = CameraSelector.LENS_FACING_BACK;
     private float downRawX, downRawY;
     private int downX, downY;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Runnable connectTimeout;
 
     private final ActivityResultLauncher<String> cameraPermission =
         registerForActivityResult(new ActivityResultContracts.RequestPermission(), granted -> {
@@ -220,19 +224,37 @@ public class MainActivity extends ComponentActivity {
             cctvPlayerView.setPlayer(player);
             player.addListener(new Player.Listener() {
                 @Override public void onPlaybackStateChanged(int playbackState) {
-                    if (playbackState == Player.STATE_BUFFERING) status.setText("Connecting to CCTV…");
-                    else if (playbackState == Player.STATE_READY) status.setText("CCTV connected • Drag PHONE window to move");
-                    else if (playbackState == Player.STATE_ENDED) status.setText("CCTV stream ended");
+                    if (playbackState == Player.STATE_BUFFERING) {
+                        status.setText("Connecting to CCTV over RTSP/TCP…");
+                    } else if (playbackState == Player.STATE_READY) {
+                        if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
+                        status.setText("CCTV connected • Drag PHONE window to move");
+                    } else if (playbackState == Player.STATE_ENDED) {
+                        status.setText("CCTV stream ended");
+                    }
                 }
                 @Override public void onPlayerError(PlaybackException error) {
-                    status.setText("CCTV connection failed • Check Wi-Fi and RTSP address");
-                    toast("CCTV error: " + error.getMessage());
+                    if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
+                    status.setText("CCTV playback error: " + error.getErrorCodeName());
+                    toast("CCTV error: " + error.getErrorCodeName() + " — " + error.getMessage());
                 }
             });
             MediaItem item = MediaItem.fromUri(url);
-            player.setMediaSource(new RtspMediaSource.Factory().createMediaSource(item));
+            // Many CCTV cameras are more reliable with RTP interleaved over TCP.
+            player.setMediaSource(new RtspMediaSource.Factory()
+                    .setForceUseRtpTcp(true)
+                    .createMediaSource(item));
             player.prepare();
             player.play();
+            if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
+            ExoPlayer connectingPlayer = player;
+            connectTimeout = () -> {
+                if (player == connectingPlayer && player.getPlaybackState() == Player.STATE_BUFFERING) {
+                    status.setText("No CCTV video after 15 seconds • Check camera IP, Wi-Fi, and RTSP stream");
+                    toast("CCTV is not sending video yet. Check that the phone and camera use the same Wi-Fi.");
+                }
+            };
+            mainHandler.postDelayed(connectTimeout, 15000);
         } catch (Exception e) {
             status.setText("Unable to start CCTV stream");
             toast("Could not start CCTV: " + e.getMessage());
@@ -240,6 +262,7 @@ public class MainActivity extends ComponentActivity {
     }
 
     private void stopCctv() {
+        if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
         if (player != null) {
             player.stop();
             player.clearMediaItems();
@@ -315,6 +338,7 @@ public class MainActivity extends ComponentActivity {
     }
 
     @Override protected void onDestroy() {
+        if (connectTimeout != null) mainHandler.removeCallbacks(connectTimeout);
         if (player != null) {
             cctvPlayerView.setPlayer(null);
             player.release();
