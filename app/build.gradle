@@ -4,11 +4,12 @@ android {
     namespace 'com.aizora.aicamera'
     compileSdk 35
     defaultConfig {
-        applicationId 'com.aizora.aicamera'
+        // Separate package: diagnostic APK will not overwrite the installed camera app.
+        applicationId 'com.aizora.aicamera.diagnostic'
         minSdk 23
         targetSdk 35
-        versionCode 3
-        versionName '2.1'
+        versionCode 1
+        versionName '2.2-diagnostic'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -16,14 +17,4 @@ android {
     }
 }
 
-// VLC 3.5.1 brings legacy split Kotlin JDK7/JDK8 artifacts that duplicate
-// classes already present in the newer kotlin-stdlib. Exclude the split jars.
-configurations.configureEach {
-    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
-    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
-}
-
-dependencies {
-    implementation 'org.videolan.android:libvlc-all:3.5.1'
-    implementation 'androidx.activity:activity:1.9.3'
-}
+// No VLC, AndroidX, or camera libraries in this startup-only diagnostic build.
